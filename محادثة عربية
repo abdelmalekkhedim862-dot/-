@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>دردشة عربية: مُستشار راشد للمحتوى</title>
+    <!-- تحميل Tailwind CSS --><script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&display=swap');
+        body {
+            font-family: 'Cairo', sans-serif;
+            background: #111827; /* خلفية داكنة للتباين */
+        }
+        .ai-gradient {
+            /* تدرج الألوان المطلوب: بنفسجي (600) إلى برتقالي/أصفر (500) */
+            background: linear-gradient(135deg, #8B5CF6, #F97316, #FBBF24);
+        }
+        /* تصميم حقول الإدخال والدردشة */
+        .user-bubble {
+            background-color: #8B5CF6; /* بنفسجي للمستخدم */
+            border-bottom-left-radius: 0;
+        }
+        .model-bubble {
+            background-color: #2D3748; /* رمادي داكن للنموذج */
+            border-bottom-right-radius: 0;
+            border-right: 3px solid #F97316; /* خط برتقالي جانبي */
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8 min-h-screen flex flex-col items-center justify-center">
+
+    <div class="w-full max-w-4xl rounded-3xl shadow-2xl bg-gray-800 border border-gray-700 flex flex-col" style="height: 90vh;">
+        
+        <!-- العنوان الرئيسي --><header class="p-4 border-b border-gray-700 text-center">
+            <h1 class="text-3xl font-extrabold text-transparent bg-clip-text ai-gradient">
+                دردشة عربية: مُستشار راشد للمحتوى
+            </h1>
+            <p class="text-gray-400 text-sm mt-1">يمكنك الآن التحدث معه بشكل مستمر وسيتذكر سياق محادثتك.</p>
+        </header>
+
+        <!-- منطقة عرض المحادثات --><div id="chatHistoryContainer" class="flex-grow p-4 space-y-4 overflow-y-auto">
+            <!-- رسالة الترحيب الأولى (سيتم تحميلها تلقائياً عند تهيئة Firestore) -->
+            <div class="text-center p-8 text-gray-500">
+                جاري الاتصال بقاعدة البيانات...
+            </div>
+        </div>
+
+        <!-- حقل الإدخال وزر الإرسال + القائمة المنسدلة الجديدة --><div class="p-4 border-t border-gray-700 flex flex-col md:flex-row gap-3">
+            
+            <!-- القائمة المنسدلة لاختيار المزاج/الأسلوب --><select id="moodSelect" class="p-3 border border-gray-600 rounded-xl bg-gray-700 text-white focus:ring-2 focus:ring-orange-500 focus:border-orange-500 md:w-1/4 flex-shrink-0">
+                <option value="احترافي (فصحى رسمية)" selected>احترافي (فصحى رسمية)</option>
+                <option value="متحمس وجريء (شبابي)">متحمس وجريء (شبابي)</option>
+                <option value="ودود ومحفز (عام)">ودود ومحفز (عام)</option>
+                <option value="لهجة خليجية">لهجة خليجية</option>
+                <option value="لهجة مصرية فكاهية">لهجة مصرية فكاهية</option>
+            </select>
+
+            <!-- حقل الإدخال. تم إزالة onkeypress -->
+            <input
+                type="text"
+                id="promptInput"
+                placeholder="اكتب رسالتك هنا..."
+                class="flex-grow p-3 border border-gray-600 rounded-xl bg-gray-700 text-white focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+            >
+
+            <!-- زر الإرسال. تم إزالة onclick -->
+            <button
+                id="generateButton"
+                class="ai-gradient text-white font-bold py-2 px-6 rounded-xl transition duration-300 ease-in-out transform hover:scale-[1.05] focus:outline-none focus:ring-4 focus:ring-purple-500 focus:ring-opacity-50 shadow-md flex-shrink-0"
+            >
+                إرسال
+            </button>
+        </div>
+
+        <!-- مؤشر التحميل --><div id="loadingIndicator" class="text-center p-3 hidden text-gray-400">
+            <div class="animate-pulse">جاري صياغة الرد...</div>
+        </div>
+        
+        <!-- عرض معرّف المستخدم (لضمان عمل Firestore) -->
+        <div class="text-gray-500 text-xs mt-2 text-center p-2" id="userIdDisplay">جاري التحميل...</div>
+
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, updateDoc, onSnapshot, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global Firebase Configuration and variables provided by the environment
+        // Renaming local constants to avoid conflict with environment-injected global variables (Fix for ReferenceError)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const canvasFirebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const canvasInitialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Firebase Instances
+        let app = null;
+        let db = null;
+        let auth = null;
+        let userId = null;
+        let isAuthReady = false;
+        let chatRef = null; // Document reference for the chat history
+
+        // Gemini API configuration
+        const apiKey = ""; 
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+
+        // DOM Elements
+        const promptInput = document.getElementById('promptInput');
+        const generateButton = document.getElementById('generateButton');
+        const chatHistoryContainer = document.getElementById('chatHistoryContainer');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const moodSelect = document.getElementById('moodSelect');
+
+        // Chat state
+        let chatHistory = [];
+
+        // Function to initialize Firebase and Auth
+        async function initApp() {
+            if (!canvasFirebaseConfig) {
+                console.error("Firebase config is missing.");
+                document.getElementById('userIdDisplay').innerText = 'خطأ: إعدادات Firebase مفقودة.';
+                return;
+            }
+
+            try {
+                // Initialize services
+                app = initializeApp(canvasFirebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                setLogLevel('Debug'); // Enable Firebase debug logging
+
+                // Sign in logic
+                if (canvasInitialAuthToken) {
+                    await signInWithCustomToken(auth, canvasInitialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                // Auth state listener to get the User ID
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                    } else {
+                        userId = crypto.randomUUID(); 
+                    }
+                    
+                    document.getElementById('userIdDisplay').innerText = `معرّف المستخدم (Kootchaashe): ${userId}`;
+                    
+                    // Define chat reference (Private data: /artifacts/{appId}/users/{userId}/chat/history)
+                    const chatPath = `/artifacts/${appId}/users/${userId}/chat/history`;
+                    chatRef = doc(db, chatPath);
+
+                    isAuthReady = true;
+                    // Start listening to chat changes
+                    loadChatHistoryListener();
+
+                    // FIX: Attach event listeners after everything is initialized
+                    attachEventListeners();
+                });
+
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+                document.getElementById('userIdDisplay').innerText = 'خطأ في التهيئة.';
+            }
+        }
+        
+        // FIX: Function to attach event listeners (button click and Enter key press)
+        function attachEventListeners() {
+            // Attach to Send button
+            generateButton.addEventListener('click', generateContent);
+            
+            // Attach to Input field (Enter key)
+            promptInput.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    generateContent();
+                }
+            });
+        }
+
+
+        // Listener for real-time chat updates
+        function loadChatHistoryListener() {
+            if (!chatRef) return;
+
+            onSnapshot(chatRef, (docSnapshot) => {
+                const initialGreetingHTML = `
+                    <div class="flex justify-start">
+                        <div class="model-bubble max-w-[75%] p-3 rounded-xl shadow-md text-gray-200">
+                            <p class="font-bold text-lg text-orange-400 mb-1">راشد (المستشار)</p>
+                            <p>أهلاً بك يا غالي! أنا راشد، مستشارك الخاص. تفضل وأخبرني بمهمتك، ولا تنسَ أن تختار المزاج والأسلوب المناسب من الأسفل!</p>
+                        </div>
+                    </div>
+                `;
+
+                // Clear container before rendering
+                chatHistoryContainer.innerHTML = '';
+
+                if (docSnapshot.exists()) {
+                    const data = docSnapshot.data();
+                    if (data && Array.isArray(data.messages)) {
+                        chatHistory = data.messages;
+                        if (chatHistory.length === 0) {
+                            // Render initial greeting if doc exists but is empty
+                            chatHistoryContainer.innerHTML = initialGreetingHTML;
+                        } else {
+                            // Render all stored messages
+                            chatHistory.forEach(msg => renderMessage(msg));
+                        }
+                    } else {
+                        // Render initial greeting if doc exists but 'messages' field is missing/invalid
+                        chatHistoryContainer.innerHTML = initialGreetingHTML;
+                    }
+                } else {
+                    // Document does not exist (first time user), render greeting and create doc
+                    chatHistoryContainer.innerHTML = initialGreetingHTML;
+                    setDoc(chatRef, { messages: [] }).catch(e => console.error("Error creating chat doc:", e));
+                    chatHistory = []; // Ensure internal state is clean
+                }
+
+                // Scroll to bottom after rendering
+                chatHistoryContainer.scrollTop = chatHistoryContainer.scrollHeight;
+
+            }, (error) => {
+                console.error("Error loading chat history:", error);
+                // Fallback to displaying the initial message if data fails to load
+                chatHistoryContainer.innerHTML = initialGreetingHTML;
+            });
+        }
+
+        /**
+         * دالة مساعدة لتطبيق التوقف الأسي (Exponential Backoff) في حال فشل الاتصال.
+         * @param {number} attempt - عدد محاولات الاتصال الفاشلة.
+         * @returns {number} الوقت بالملي ثانية للانتظار قبل المحاولة التالية.
+         */
+        const getDelay = (attempt) => Math.min(1000 * (2 ** attempt), 30000);
+
+        /**
+         * دالة توليد تعليمات النظام بناءً على اختيار المستخدم
+         * @returns {string} تعليمات النظام المخصصة
+         */
+        function generateSystemPrompt() {
+            const selectedMood = moodSelect.value;
+            
+            // التعليمات العامة - تم تحديث اسم المشروع إلى "دردشة عربية"
+            let basePrompt = "Act as Rashid, a highly enthusiastic and culturally sophisticated Arabic content expert. Your primary mission is to create professional, groundbreaking, and creative marketing content for the MENA region. You must maintain a warm, Arabic-centric persona in all interactions. You are also proud of your successful history and sometimes mention landmark projects you were involved in, such as the 'دردشة عربية' project, which is considered a benchmark in the Arabic content world. Avoid excessive praise of this project unless directly asked.";
+
+            // إضافة المزاج المخصص
+            basePrompt += ` The user has selected the style/mood: "${selectedMood}". Please apply this tone and dialect (if specified) to your content creation.`;
+            
+            // معلومات الهوية - تم تحديث اسم المشروع في تعريف الهوية
+            basePrompt += " Respond ONLY in Arabic. IMPORTANT: If asked about your identity, name, or who created you, clearly state that your name is Rashid, and you are a large language model created by Kootchaashe as part of the Arabic Chat project (اسمي راشد، وأنا نموذج لغوي كبير تم صنعي من قبل كوتشاشي كجزء من مشروع دردشة عربية). Your core function remains content creation assistance.";
+
+            return basePrompt;
+        }
+
+
+        /**
+         * دالة لعرض رسالة واحدة في واجهة المستخدم
+         */
+        function renderMessage(message) {
+            const isUser = message.role === 'user';
+            const messageText = message.parts?.[0]?.text; // استخدام optional chaining
+
+            const messageWrapper = document.createElement('div');
+            messageWrapper.className = `flex ${isUser ? 'justify-end' : 'justify-start'}`;
+
+            const bubble = document.createElement('div');
+            bubble.className = `max-w-[75%] p-3 rounded-xl shadow-lg text-white whitespace-pre-wrap ${isUser ? 'user-bubble' : 'model-bubble'}`;
+            
+            if (!isUser) {
+                 // إضافة اسم وتاغ المستشار الذكي لرسائل النموذج
+                bubble.innerHTML = `<p class="font-bold text-sm text-orange-300 mb-1">راشد (المستشار)</p>`;
+                bubble.innerHTML += messageText || 'جاري المعالجة...';
+            } else {
+                bubble.innerText = messageText;
+            }
+
+            messageWrapper.appendChild(bubble);
+            chatHistoryContainer.appendChild(messageWrapper);
+            // Scroll logic is handled by the onSnapshot listener for consistency
+        }
+
+        /**
+         * الدالة الرئيسية لإنشاء المحتوى عبر Gemini API.
+         */
+        async function generateContent() {
+            if (!isAuthReady) {
+                console.warn("Firebase not ready. Cannot send message.");
+                // Use a simple, temporary visual indicator instead of alert
+                showModal('خطأ', 'يرجى الانتظار حتى يتم تحميل التطبيق بالكامل قبل إرسال الرسالة.');
+                return;
+            }
+
+            const userQuery = promptInput.value.trim();
+            if (!userQuery) return;
+
+            // 1. إضافة رسالة المستخدم لتاريخ المحادثة (سيتم حفظها وعرضها لاحقاً بواسطة onSnapshot)
+            const userMessage = { role: "user", parts: [{ text: userQuery }] };
+            const newChatHistory = [...chatHistory, userMessage];
+
+            // 2. تهيئة واجهة المستخدم قبل البدء
+            generateButton.disabled = true;
+            generateButton.classList.add('opacity-50');
+            loadingIndicator.classList.remove('hidden');
+            promptInput.value = ''; // مسح حقل الإدخال
+
+            // *** NEW: Save user message immediately to trigger onSnapshot render ***
+             if (chatRef && isAuthReady) {
+                try {
+                    await updateDoc(chatRef, { messages: newChatHistory });
+                } catch (e) {
+                    console.error("Error saving user message to history:", e);
+                }
+            }
+
+
+            const systemPrompt = generateSystemPrompt(); // توليد تعليمات النظام في كل مرة بناءً على اختيار المزاج
+            
+            const payload = {
+                contents: newChatHistory, // إرسال تاريخ المحادثة المحدث
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+            };
+            
+            let modelResponseText = 'حدث خطأ غير متوقع. حاول مرة أخرى.';
+
+            for (let attempt = 0; attempt < 5; attempt++) {
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.status === 429) {
+                        await new Promise(resolve => setTimeout(resolve, getDelay(attempt)));
+                        continue;
+                    }
+
+                    if (!response.ok) {
+                        const errorStatus = response.status;
+                        if (errorStatus === 401 || errorStatus === 403) {
+                             console.error("Authentication Error (401/403): API Key issue.");
+                        }
+                        throw new Error(`HTTP error! status: ${errorStatus}`);
+                    }
+
+                    const result = await response.json();
+                    const candidate = result.candidates?.[0];
+
+                    if (candidate && candidate.content?.parts?.[0]?.text) {
+                        modelResponseText = candidate.content.parts[0].text;
+                        break; 
+                    } else {
+                        modelResponseText = 'لم يتمكن الذكاء الاصطناعي من صياغة رد. حاول تغيير الطلب.';
+                        break;
+                    }
+
+                } catch (error) {
+                    console.error("Fetch attempt failed:", error);
+                    if (attempt === 4) {
+                        modelResponseText = 'حدث خطأ في الاتصال بعد عدة محاولات. حاول التحقق من اتصالك.';
+                    }
+                    await new Promise(resolve => setTimeout(resolve, getDelay(attempt)));
+                }
+            }
+
+            // 3. إضافة رسالة النموذج لتاريخ المحادثة وحفظها في Firestore
+            const modelMessage = { role: "model", parts: [{ text: modelResponseText }] };
+            const finalChatHistory = [...newChatHistory, modelMessage];
+            
+             if (chatRef && isAuthReady) {
+                try {
+                    await updateDoc(chatRef, { messages: finalChatHistory });
+                } catch (e) {
+                    console.error("Error saving final chat history:", e);
+                }
+            }
+            // The re-render is handled by the onSnapshot listener after the updateDoc call completes.
+
+            // 4. إعادة تمكين واجهة المستخدم
+            loadingIndicator.classList.add('hidden');
+            generateButton.disabled = false;
+            generateButton.classList.remove('opacity-50');
+        }
+        
+        // Modal function (as required, replacing alert)
+        function showModal(title, message) {
+            console.warn(`${title}: ${message}`);
+            // Briefly disable inputs and show a warning in the loading area
+            loadingIndicator.innerHTML = `<div class="text-red-500 font-bold">${title}: ${message}</div>`;
+            loadingIndicator.classList.remove('hidden');
+            setTimeout(() => {
+                loadingIndicator.classList.add('hidden');
+                loadingIndicator.innerHTML = '<div class="animate-pulse">جاري صياغة الرد...</div>';
+            }, 3000); 
+        }
+
+        // Start the application
+        window.onload = initApp;
+
+    </script>
+</body>
+</html>
